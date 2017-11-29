@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from random import sample
 import data_loader
 
 # Parameters
@@ -19,11 +20,14 @@ train_file = "../dataset/kaggle_and_nature.csv"
 
 # Model Hyperparameters
 feat_dim = 50
+cnn_w = [3,4,5]
+cnn_h = [10,10,20]
+sum_h = sum(cnn_h)
 
 # Training Parameters
 batch_size = 20
 num_epochs = 30
-learning_rate = 0.001
+learning_rate = 0.005
 momentum = (0.9, 0.999)
 evaluate_every = 3
 
@@ -36,44 +40,47 @@ id2cult, id2comp, train_cult, train_comp, train_comp_len, test_cult, test_comp, 
 print("Train/Test/Cult/Comp: {:d}/{:d}/{:d}/{:d}".format(len(train_cult), len(test_cult), len(id2cult), len(id2comp)))
 print("==================================================================================")
 
-class ConvModule(nn.Module):
-    def __init__(self, input_size, comp_cnt):
-        super(ConvModule, self).__init__()
+class LinearModule(nn.Module):
+    def __init__(self, input_size, output_size, comp_cnt):
+        super(LinearModule, self).__init__()
 
         # attributes:
-        self.maxlen = max_comp_cnt
-        self.in_channels = input_size
-        self.hidden_channels = 32
-        self.out_channels = len(id2cult) #[25*k for k in kernel_sizes]
-        self.cnn_kernel_size = 3 #kernel_sizes
+        self.r = 3
+        self.out_cnt = 10
+        self.input_size = input_size * self.r
+        self.output_size = output_size
 
         # modules:
         self.comp_weight = nn.Embedding(comp_cnt, feat_dim).type(ftype)
-        self.cnn1 = nn.Conv1d(self.in_channels, self.hidden_channels, self.cnn_kernel_size)
-        self.cnn2 = nn.Conv1d(self.hidden_channels, self.out_channels, self.cnn_kernel_size)
-
-        self.maxpool1 = nn.MaxPool1d(3)
-        self.maxpool2 = nn.MaxPool1d(18)
-        self.relu = nn.ReLU()
+        self.linear = nn.Linear(self.input_size, self.output_size)
         self.dropout = nn.Dropout(p=0.5)
+        self.active = nn.Sigmoid()
 
-    def forward(self, composer, emb_mask, step):
-        composer = self.comp_weight(composer)
-        composer = torch.mul(composer, emb_mask).permute(0,2,1)
+    def nCr(self, data, r, size):
+        result = set()
+        while len(result) < size:
+            result.add(torch.cat(sample(data,r), 0))
+        return list(result)
 
-        output = self.cnn1(composer)
-        output = torch.squeeze(self.maxpool1(output))
-        output = self.relu(output)
+    def forward(self, x, emb_mask, step):
+        x = self.comp_weight(x)
+        x = torch.mul(x, emb_mask)
+        batches = []
+        for vecs in x:
+            vecs = self.nCr(vecs, self.r, self.out_cnt)
+            batches.append(torch.sum(torch.cat([self.active(self.linear(vec)).view(-1,1) for vec in vecs], 1), 1, keepdim=True))
+        x = torch.t(torch.cat(batches, 1))
+            
+        '''
+        if step == 1:
+            x = self.dropout(x)
+        '''
 
-        output = self.cnn2(output)
-        output = torch.squeeze(self.maxpool2(output))
-        output = self.relu(output)
-
-        return output
+        return x
 
 def parameters():
     params = []
-    for model in [cnn_model]:
+    for model in [linear_model]:
         params += list(model.parameters())
 
     return params
@@ -98,16 +105,14 @@ def run(culture, composer, composer_cnt, step):
     # (batch) x (max_comp_cnt(65))
     composer = Variable(torch.from_numpy(np.asarray(composer))).type(ltype)
     emb_mask = make_mask(max_comp_cnt, feat_dim, composer_cnt).view(-1, max_comp_cnt, feat_dim)
-    # (batch) x (sum(25 * cnn_w)(275))
-    cnn_output = cnn_model(composer, emb_mask, step)
-    # (batch) x (culture_cnt)
-    #lin_output = linear_model(cnn_output)
+    #cnn_output = cnn_model(composer, emb_mask)
+    lin_output = linear_model(composer, emb_mask, step)
 
-    J = loss_model(cnn_output, culture) 
+    J = loss_model(lin_output, culture) 
 
-    cnn_output = np.argmax(cnn_output.data.cpu().numpy(), axis=1)
+    lin_output = np.argmax(lin_output.data.cpu().numpy(), axis=1)
     culture = culture.data.cpu().numpy()
-    hit_cnt = np.sum(np.array(cnn_output) == np.array(culture))
+    hit_cnt = np.sum(np.array(lin_output) == np.array(culture))
 
     if step == 2:
         return hit_cnt, J.data.cpu().numpy()
@@ -134,7 +139,7 @@ def print_score(batches, step):
         np.save("id2comp.npy", id2comp)
 
 ###############################################################################################
-cnn_model = ConvModule(feat_dim, len(id2comp)).cuda()
+linear_model = LinearModule(feat_dim, len(id2cult), len(id2comp)).cuda()
 loss_model = nn.CrossEntropyLoss().cuda()
 #optimizer = torch.optim.SGD(parameters(), lr=learning_rate, momentum=momentum)
 optimizer = torch.optim.Adam(parameters(), lr=learning_rate, betas=momentum)
@@ -149,7 +154,7 @@ for i in xrange(num_epochs):
         batch_hc, batch_loss = run(batch_cult, batch_comp, batch_comp_len, step=1)
         total_hc += batch_hc
         total_loss += batch_loss
-        if (j+1) % 500 == 0:
+        if (j+1) % 1000 == 0:
             print("batch #{:d}: ".format(j+1)), "batch_loss :", total_loss/j, "acc. :", total_hc/batch_size/j*100, datetime.datetime.now()
 
     # Evaluation

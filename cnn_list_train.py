@@ -19,6 +19,9 @@ train_file = "../dataset/kaggle_and_nature.csv"
 
 # Model Hyperparameters
 feat_dim = 50
+cnn_w = [1,2,3,4,5]
+cnn_h = [25,50,75,100,125]
+sum_h = sum(cnn_h)
 
 # Training Parameters
 batch_size = 20
@@ -37,43 +40,59 @@ print("Train/Test/Cult/Comp: {:d}/{:d}/{:d}/{:d}".format(len(train_cult), len(te
 print("==================================================================================")
 
 class ConvModule(nn.Module):
-    def __init__(self, input_size, comp_cnt):
+    def __init__(self, input_size, kernel_sizes, comp_cnt):
         super(ConvModule, self).__init__()
 
         # attributes:
         self.maxlen = max_comp_cnt
         self.in_channels = input_size
-        self.hidden_channels = 32
-        self.out_channels = len(id2cult) #[25*k for k in kernel_sizes]
-        self.cnn_kernel_size = 3 #kernel_sizes
+        self.out_channels = [25*k for k in kernel_sizes]
+        self.kernel_sizes = kernel_sizes
 
         # modules:
         self.comp_weight = nn.Embedding(comp_cnt, feat_dim).type(ftype)
-        self.cnn1 = nn.Conv1d(self.in_channels, self.hidden_channels, self.cnn_kernel_size)
-        self.cnn2 = nn.Conv1d(self.hidden_channels, self.out_channels, self.cnn_kernel_size)
-
-        self.maxpool1 = nn.MaxPool1d(3)
-        self.maxpool2 = nn.MaxPool1d(18)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(p=0.5)
+        self.conv1d = nn.ModuleList([nn.Conv1d(self.in_channels, out_channels=25*kernel_size,
+                                    kernel_size=kernel_size, stride=1) 
+                                    for kernel_size in self.kernel_sizes])
+        self.activate = nn.Tanh()
 
     def forward(self, composer, emb_mask, step):
         composer = self.comp_weight(composer)
         composer = torch.mul(composer, emb_mask).permute(0,2,1)
 
-        output = self.cnn1(composer)
-        output = torch.squeeze(self.maxpool1(output))
-        output = self.relu(output)
-
-        output = self.cnn2(output)
-        output = torch.squeeze(self.maxpool2(output))
-        output = self.relu(output)
+        output_list = []
+        for i, conv in enumerate(self.conv1d):
+            output_list.append(torch.max(self.activate(conv(composer)), 2)[0])
+        output = torch.cat(output_list, dim=1)
 
         return output
 
+class LinearModule(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(LinearModule, self).__init__()
+
+        # attributes:
+        self.input_size = input_size #375
+        #self.hidden_size1 = 128
+        #self.hidden_size2 = 64
+        self.output_size = output_size
+
+        # modules:
+        self.linear1 = nn.Linear(self.input_size, self.output_size)
+        #self.linear2 = nn.Linear(self.hidden_size1, self.hidden_size2)
+        #self.linear3 = nn.Linear(self.hidden_size2, self.output_size)
+        self.active = nn.Sigmoid()
+
+    def forward(self, x):
+        x = self.active(self.linear1(x))
+        #x = self.active(self.linear2(x))
+        #x = self.active(self.linear3(x))
+
+        return x
+
 def parameters():
     params = []
-    for model in [cnn_model]:
+    for model in [cnn_model, linear_model]:
         params += list(model.parameters())
 
     return params
@@ -101,9 +120,9 @@ def run(culture, composer, composer_cnt, step):
     # (batch) x (sum(25 * cnn_w)(275))
     cnn_output = cnn_model(composer, emb_mask, step)
     # (batch) x (culture_cnt)
-    #lin_output = linear_model(cnn_output)
+    lin_output = linear_model(cnn_output)
 
-    J = loss_model(cnn_output, culture) 
+    J = loss_model(lin_output, culture) 
 
     cnn_output = np.argmax(cnn_output.data.cpu().numpy(), axis=1)
     culture = culture.data.cpu().numpy()
@@ -134,7 +153,8 @@ def print_score(batches, step):
         np.save("id2comp.npy", id2comp)
 
 ###############################################################################################
-cnn_model = ConvModule(feat_dim, len(id2comp)).cuda()
+cnn_model = ConvModule(feat_dim, cnn_w, len(id2comp)).cuda()
+linear_model = LinearModule(sum_h, len(id2cult)).cuda()
 loss_model = nn.CrossEntropyLoss().cuda()
 #optimizer = torch.optim.SGD(parameters(), lr=learning_rate, momentum=momentum)
 optimizer = torch.optim.Adam(parameters(), lr=learning_rate, betas=momentum)

@@ -39,35 +39,6 @@ id2cult, id2comp, train_cult, train_comp, train_comp_len, test_cult, test_comp, 
 print("Train/Test/Cult/Comp: {:d}/{:d}/{:d}/{:d}".format(len(train_cult), len(test_cult), len(id2cult), len(id2comp)))
 print("==================================================================================")
 
-class ConvModule(nn.Module):
-    def __init__(self, input_size, kernel_sizes, comp_cnt):
-        super(ConvModule, self).__init__()
-
-        # attributes:
-        self.maxlen = max_comp_cnt
-        self.in_channels = input_size
-        self.out_channels = cnn_h 
-        self.cnn_kernel_size = kernel_sizes
-        self.mp_kernel_size = 60
-
-        # modules:
-        self.comp_weight = nn.Embedding(comp_cnt, feat_dim).type(ftype)
-        self.cnn = nn.ModuleList([nn.Conv1d(self.in_channels, self.out_channels[i], 
-                                kernel_size=self.cnn_kernel_size[i], stride=1)
-                                for i in xrange(len(kernel_sizes))])
-        self.maxpool = nn.MaxPool1d(self.mp_kernel_size)
-
-    def forward(self, composer, emb_mask):
-        composer = self.comp_weight(composer)
-        composer = torch.mul(composer, emb_mask).permute(0,2,1)
-
-        output = []
-        for i, conv in enumerate(self.cnn):
-            output.append(torch.max(F.relu(conv(composer)), 2)[0])
-        output = torch.cat(output, 1)
-
-        return output
-
 class LinearModule(nn.Module):
     def __init__(self, input_size, output_size, comp_cnt):
         super(LinearModule, self).__init__()
@@ -158,7 +129,6 @@ def print_score(batches, step):
         np.save("id2comp.npy", id2comp)
 
 ###############################################################################################
-#cnn_model = ConvModule(feat_dim, cnn_w, len(id2comp)).cuda()
 linear_model = LinearModule(feat_dim * max_comp_cnt, len(id2cult), len(id2comp)).cuda()
 loss_model = nn.CrossEntropyLoss().cuda()
 #optimizer = torch.optim.SGD(parameters(), lr=learning_rate, momentum=momentum)
